@@ -22,7 +22,9 @@ import (
 
 // CSIHandler is for calling rpc interfaces
 type CSIHandler interface {
-	ControllerVolumeChecking(ctx context.Context, volumeID string) (bool, string, error)
+	ControllerListVolumeConditions(ctx context.Context) (map[string]*VolumeConditionResult, error)
 
-	NodeVolumeChecking(ctx context.Context, volumeID string, volumePath string, volumeStagingPath string) (bool, string, error)
+	ControllerGetVolumeCondition(ctx context.Context, volumeID string) (*VolumeConditionResult, error)
+
+	NodeGetVolumeCondition(ctx context.Context, volumeID string, volumePath string, volumeStagingPath string) (*VolumeConditionResult, error)
 }

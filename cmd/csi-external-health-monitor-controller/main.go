@@ -49,12 +49,13 @@ const (
 var (
 	monitorInterval = flag.Duration("monitor-interval", 1*time.Minute, "Interval for controller to check volumes health condition.")
 
-	kubeconfig    = flag.String("kubeconfig", "", "Absolute path to the kubeconfig file. Required only when running out of cluster.")
-	resync        = flag.Duration("resync", 10*time.Minute, "Resync interval of the controller.")
-	csiAddress    = flag.String("csi-address", "/run/csi/socket", "Address of the CSI driver socket.")
-	showVersion   = flag.Bool("version", false, "Show version.")
-	timeout       = flag.Duration("timeout", 15*time.Second, "Timeout for waiting for attaching or detaching the volume.")
-	workerThreads = flag.Uint("worker-threads", 10, "Number of pv monitor worker threads")
+	kubeconfig        = flag.String("kubeconfig", "", "Absolute path to the kubeconfig file. Required only when running out of cluster.")
+	resync            = flag.Duration("resync", 10*time.Minute, "Resync interval of the controller.")
+	csiAddress        = flag.String("csi-address", "/run/csi/socket", "Address of the CSI driver socket.")
+	showVersion       = flag.Bool("version", false, "Show version.")
+	timeout           = flag.Duration("timeout", 15*time.Second, "Timeout for waiting for attaching or detaching the volume.")
+	workerThreads     = flag.Uint("worker-threads", 10, "Number of pv monitor worker threads")
+	enableNodeWatcher = flag.Bool("version", false, "Enable node watcher.")
 
 	enableLeaderElection    = flag.Bool("leader-election", false, "Enable leader election.")
 	leaderElectionNamespace = flag.String("leader-election-namespace", "", "Namespace where the leader election resource lives. Defaults to the pod namespace if not set.")
@@ -135,27 +136,30 @@ func main() {
 		os.Exit(1)
 	}
 
-	supportGetVolume, err := supportGetVolume(ctx, csiConn)
+	supportControllerListVolumes, err := supportControllerListVolumes(ctx, csiConn)
 	if err != nil {
 		klog.Error(err.Error())
 		os.Exit(1)
 	}
-	if !supportGetVolume {
-		klog.V(2).Infof("CSI driver does not support GetVolume Controller Service, exiting")
-		os.Exit(1)
-	}
 
-	supportGetVolumeHealth, err := supportGetVolumeCondition(ctx, csiConn)
+	supportControllerGetVolume, err := supportControllerGetVolume(ctx, csiConn)
 	if err != nil {
 		klog.Error(err.Error())
 		os.Exit(1)
 	}
-	if !supportGetVolumeHealth {
-		klog.V(2).Infof("CSI driver does not support GetVolumeHealth Controller Service, exiting")
+
+	supportControllerVolumeCondition, err := supportControllerVolumeCondition(ctx, csiConn)
+	if err != nil {
+		klog.Error(err.Error())
 		os.Exit(1)
 	}
 
-	monitorController := monitorcontroller.NewPVMonitorController(clientset, storageDriver, csiConn, *timeout, *monitorInterval, factory.Core().V1().PersistentVolumes(),
+	if (!supportControllerListVolumes && !supportControllerGetVolume) || !supportControllerVolumeCondition {
+		klog.V(2).Infof("CSI driver does not support Controller ListVolumes and GetVolume service or does not implement VolumeCondition, exiting")
+		os.Exit(1)
+	}
+
+	monitorController := monitorcontroller.NewPVMonitorController(clientset, storageDriver, supportControllerListVolumes, *enableNodeWatcher, csiConn, *timeout, *monitorInterval, factory.Core().V1().PersistentVolumes(),
 		factory.Core().V1().PersistentVolumeClaims(), factory.Core().V1().Pods(), factory.Core().V1().Nodes())
 
 	run := func(ctx context.Context) {
@@ -189,8 +193,17 @@ func buildConfig(kubeconfig string) (*rest.Config, error) {
 	return rest.InClusterConfig()
 }
 
+func supportControllerListVolumes(ctx context.Context, csiConn *grpc.ClientConn) (supportControllerListVolumes bool, err error) {
+	caps, err := rpc.GetControllerCapabilities(ctx, csiConn)
+	if err != nil {
+		return false, fmt.Errorf("failed to get controller capabilities: %v", err)
+	}
+
+	return caps[csi.ControllerServiceCapability_RPC_LIST_VOLUMES], nil
+}
+
 // TODO: move this to csi-lib-utils
-func supportGetVolume(ctx context.Context, csiConn *grpc.ClientConn) (supportGetVolume bool, err error) {
+func supportControllerGetVolume(ctx context.Context, csiConn *grpc.ClientConn) (supportControllerGetVolume bool, err error) {
 	client := csi.NewControllerClient(csiConn)
 	req := csi.ControllerGetCapabilitiesRequest{}
 	rsp, err := client.ControllerGetCapabilities(ctx, &req)
@@ -216,7 +229,7 @@ func supportGetVolume(ctx context.Context, csiConn *grpc.ClientConn) (supportGet
 }
 
 // TODO: move this to csi-lib-utils
-func supportGetVolumeCondition(ctx context.Context, csiConn *grpc.ClientConn) (supportGetVolumeHealth bool, err error) {
+func supportControllerVolumeCondition(ctx context.Context, csiConn *grpc.ClientConn) (supportControllerVolumeCondition bool, err error) {
 	client := csi.NewControllerClient(csiConn)
 	req := csi.ControllerGetCapabilitiesRequest{}
 	rsp, err := client.ControllerGetCapabilities(ctx, &req)
@@ -260,41 +273,6 @@ func supportsPluginControllerService(ctx context.Context, csiConn *grpc.ClientCo
 		}
 		t := srv.GetType()
 		if t == csi.PluginCapability_Service_CONTROLLER_SERVICE {
-			return true, nil
-		}
-	}
-
-	return false, nil
-}
-
-// TODO: move this to csi-lib-utils
-// TODO: do we need to consider ControllerServiceCapability_RPC_LIST_VOLUMES_VOLUME_HEALTH ?
-func supportListVolumesPublishedNodes(ctx context.Context, csiConn *grpc.ClientConn) (bool, error) {
-	client := csi.NewControllerClient(csiConn)
-	req := csi.ControllerGetCapabilitiesRequest{}
-	rsp, err := client.ControllerGetCapabilities(ctx, &req)
-	if err != nil {
-		return false, err
-	}
-
-	var listVolumes bool
-	var publishNodes bool
-	for _, cap := range rsp.GetCapabilities() {
-		if cap == nil {
-			continue
-		}
-		rpc := cap.GetRpc()
-		if rpc == nil {
-			continue
-		}
-		t := rpc.GetType()
-		if t == csi.ControllerServiceCapability_RPC_LIST_VOLUMES {
-			listVolumes = true
-		} else if t == csi.ControllerServiceCapability_RPC_LIST_VOLUMES_PUBLISHED_NODES {
-			publishNodes = true
-		}
-
-		if listVolumes && publishNodes {
 			return true, nil
 		}
 	}

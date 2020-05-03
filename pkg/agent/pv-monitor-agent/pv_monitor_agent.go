@@ -18,7 +18,6 @@ package pv_monitor_agent
 
 import (
 	"fmt"
-	"sync"
 	"time"
 
 	"k8s.io/klog"
@@ -41,6 +40,7 @@ import (
 	"github.com/kubernetes-csi/external-health-monitor/pkg/util"
 )
 
+// PodWithPVItem contains pv name as well as pod information the pv is attached to
 type PodWithPVItem struct {
 	podNameSpace string
 	podName      string
@@ -49,6 +49,7 @@ type PodWithPVItem struct {
 	pv *v1.PersistentVolume*/
 }
 
+// PVMonitorAgent is the struct of pv monitor agent containing all information to perform volumes health condition checking
 type PVMonitorAgent struct {
 	client          kubernetes.Interface
 	monitorName     string
@@ -73,11 +74,10 @@ type PVMonitorAgent struct {
 	kubeletRootPath     string
 	pvChecker           *handler.PVHealthConditionChecker
 
-	sync.Mutex
-	pvEnqueued         map[string]bool
 	podWithPVItemQueue workqueue.Interface
 }
 
+// NewPVMonitorAgent create pv monitor agent
 func NewPVMonitorAgent(client kubernetes.Interface, monitorName string, conn *grpc.ClientConn, timeout time.Duration, monitorInterval time.Duration, pvInformer coreinformers.PersistentVolumeInformer,
 	pvcInformer coreinformers.PersistentVolumeClaimInformer, podInformer coreinformers.PodInformer, supportStageUnstage bool, kubeletRootPath string) *PVMonitorAgent {
 	broadcaster := record.NewBroadcaster()
@@ -114,12 +114,12 @@ func NewPVMonitorAgent(client kubernetes.Interface, monitorName string, conn *gr
 	agent.podLister = podInformer.Lister()
 	agent.podListerSynced = podInformer.Informer().HasSynced
 
-	agent.pvChecker = handler.NewPVHealthConditionChecker(monitorName, conn, client, timeout, agent.pvcLister, agent.eventRecorder)
+	agent.pvChecker = handler.NewPVHealthConditionChecker(monitorName, conn, client, timeout, agent.pvcLister, agent.pvLister, agent.eventRecorder)
 
 	return agent
-
 }
 
+// Run runs volume health condition checking method
 func (agent *PVMonitorAgent) Run(workers int, stopCh <-chan struct{}) {
 	defer agent.podWithPVItemQueue.ShutDown()
 
@@ -157,7 +157,7 @@ func (agent *PVMonitorAgent) checkPVWorker() {
 
 	podWithPV, ok := key.(*PodWithPVItem)
 	if !ok || agent.atLeastOneFieldIsEmpty(podWithPV) {
-		klog.Errorf("error item type or at least one filed in PodWithPV is empty", key)
+		klog.Errorf("error item type or at least one filed in PodWithPV is empty")
 	}
 
 	klog.V(4).Infof("Started PV processing %q", podWithPV.pvName)
