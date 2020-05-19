@@ -22,8 +22,11 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
+// PodSet is a pod map, whose key is podname + "/" + podname
 type PodSet map[string]*v1.Pod
 
+// PVCToPodsCache stores PVCs/Pods mapping info
+// we can get all pods using one specific PVC more efficiently by this
 type PVCToPodsCache struct {
 	sync.Mutex
 
@@ -31,22 +34,11 @@ type PVCToPodsCache struct {
 	pvcToPodsMap map[string]PodSet
 }
 
+// NewPVCToPodsCache creates a new PVCToPodsCache
 func NewPVCToPodsCache() *PVCToPodsCache {
 	return &PVCToPodsCache{
 		pvcToPodsMap: make(map[string]PodSet),
 	}
-}
-
-func (cache *PVCToPodsCache) AddPodToPVC(pvc *v1.PersistentVolumeClaim, pod *v1.Pod) {
-	cache.Lock()
-	defer cache.Unlock()
-
-	pvcUniqName := pvc.Namespace + "/" + pvc.Name
-	if cache.pvcToPodsMap[pvcUniqName] == nil {
-		cache.pvcToPodsMap[pvcUniqName] = make(PodSet)
-	}
-
-	cache.pvcToPodsMap[pvcUniqName][pod.Namespace+"/"+pod.Name] = pod
 }
 
 // TODO: support inline csi volumes

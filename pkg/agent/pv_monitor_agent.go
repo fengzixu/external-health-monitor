@@ -45,14 +45,12 @@ type PodWithPVItem struct {
 	podNameSpace string
 	podName      string
 	pvName       string
-	/*pod *v1.Pod
-	pv *v1.PersistentVolume*/
 }
 
 // PVMonitorAgent is the struct of pv monitor agent containing all information to perform volumes health condition checking
 type PVMonitorAgent struct {
 	client          kubernetes.Interface
-	monitorName     string
+	driverName      string
 	nodeName        string
 	monitorInterval time.Duration
 	eventRecorder   record.EventRecorder
@@ -78,12 +76,12 @@ type PVMonitorAgent struct {
 }
 
 // NewPVMonitorAgent create pv monitor agent
-func NewPVMonitorAgent(client kubernetes.Interface, monitorName string, conn *grpc.ClientConn, timeout time.Duration, monitorInterval time.Duration, pvInformer coreinformers.PersistentVolumeInformer,
+func NewPVMonitorAgent(client kubernetes.Interface, driverName string, conn *grpc.ClientConn, timeout time.Duration, monitorInterval time.Duration, pvInformer coreinformers.PersistentVolumeInformer,
 	pvcInformer coreinformers.PersistentVolumeClaimInformer, podInformer coreinformers.PodInformer, supportStageUnstage bool, kubeletRootPath string) *PVMonitorAgent {
 	broadcaster := record.NewBroadcaster()
 	broadcaster.StartRecordingToSink(&corev1.EventSinkImpl{Interface: client.CoreV1().Events(v1.NamespaceAll)})
 	var eventRecorder record.EventRecorder
-	eventRecorder = broadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: fmt.Sprintf("csi-pv-monitor-controller-%s", monitorName)})
+	eventRecorder = broadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: fmt.Sprintf("csi-pv-monitor-controller-%s", driverName)})
 
 	agent := &PVMonitorAgent{
 		supportStageUnstage: supportStageUnstage,
@@ -91,10 +89,9 @@ func NewPVMonitorAgent(client kubernetes.Interface, monitorName string, conn *gr
 		csiConn:             conn,
 		eventRecorder:       eventRecorder,
 		client:              client,
-		monitorName:         monitorName,
+		driverName:          driverName,
 		monitorInterval:     monitorInterval,
 		podWithPVItemQueue:  workqueue.NewNamed("csi-monitor-pod-pv-queue"),
-		//podWithPVItemQueue:  workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "csi-monitor-pod-pv-queue"),
 	}
 
 	// PV lister
@@ -109,12 +106,12 @@ func NewPVMonitorAgent(client kubernetes.Interface, monitorName string, conn *gr
 	podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    agent.podAdded,
 		UpdateFunc: agent.podUpdated,
-		//DeleteFunc: agent.podDeleted,
+		// deleted pods will not be readded to the queue, do not need DeleteFunc here
 	})
 	agent.podLister = podInformer.Lister()
 	agent.podListerSynced = podInformer.Informer().HasSynced
 
-	agent.pvChecker = handler.NewPVHealthConditionChecker(monitorName, conn, client, timeout, agent.pvcLister, agent.pvLister, agent.eventRecorder)
+	agent.pvChecker = handler.NewPVHealthConditionChecker(driverName, conn, client, timeout, agent.pvcLister, agent.pvLister, agent.eventRecorder)
 
 	return agent
 }
@@ -124,10 +121,10 @@ func (agent *PVMonitorAgent) Run(workers int, stopCh <-chan struct{}) {
 	defer agent.podWithPVItemQueue.ShutDown()
 
 	klog.Infof("Starting CSI External PV Health Monitor Agent")
-	defer klog.Infof("Shutting CSI External PV Health Monitor Agent")
+	defer klog.Infof("Shutting down CSI External PV Health Monitor Agent")
 
 	if !cache.WaitForCacheSync(stopCh, agent.pvcListerSynced, agent.pvListerSynced, agent.podListerSynced) {
-		klog.Errorf("Cannot sync caches")
+		klog.Errorf("Cannot sync cache")
 		return
 	}
 
@@ -135,12 +132,10 @@ func (agent *PVMonitorAgent) Run(workers int, stopCh <-chan struct{}) {
 		go wait.Until(agent.checkPVWorker, agent.monitorInterval, stopCh)
 	}
 
-	// TODO: reconcile Pods and PVs
-
 	<-stopCh
 }
 
-func (agent *PVMonitorAgent) atLeastOneFieldIsEmpty(podWithPVItem *PodWithPVItem) bool {
+func (agent *PVMonitorAgent) isPodWithPVItemInValid(podWithPVItem *PodWithPVItem) bool {
 	if len(podWithPVItem.podNameSpace) == 0 || len(podWithPVItem.podName) == 0 || len(podWithPVItem.pvName) == 0 {
 		return true
 	}
@@ -156,11 +151,11 @@ func (agent *PVMonitorAgent) checkPVWorker() {
 	defer agent.podWithPVItemQueue.Done(key)
 
 	podWithPV, ok := key.(*PodWithPVItem)
-	if !ok || agent.atLeastOneFieldIsEmpty(podWithPV) {
-		klog.Errorf("error item type or at least one filed in PodWithPV is empty")
+	if !ok || agent.isPodWithPVItemInValid(podWithPV) {
+		klog.Errorf("error item type or PodWithPVItem is invalid(there are empty fileds in it)")
 	}
 
-	klog.V(4).Infof("Started PV processing %q", podWithPV.pvName)
+	klog.V(6).Infof("Started PV processing %q", podWithPV.pvName)
 	// get PV to process
 	pv, err := agent.pvLister.Get(podWithPV.pvName)
 	if err != nil {

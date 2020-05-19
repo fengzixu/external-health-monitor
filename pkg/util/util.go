@@ -27,10 +27,7 @@ import (
 )
 
 const (
-	VolumeHealthy = "HEALTHY"
-)
-
-const (
+	// CSI Plugin Name
 	CSIPluginName                = "kubernetes.io/csi"
 	DefaultKubeletPluginsDirName = "plugins"
 	persistentVolumeInGlobalPath = "pv"
@@ -39,6 +36,7 @@ const (
 	DefaultKubeletVolumesDirName = "volumes"
 )
 
+// MakeDeviceMountPath generates device mount path
 func MakeDeviceMountPath(kubeletRootDir string, pv *v1.PersistentVolume) (string, error) {
 	if pv.Name == "" {
 		return "", fmt.Errorf("makeDeviceMountPath failed, pv name empty")
@@ -50,6 +48,7 @@ func MakeDeviceMountPath(kubeletRootDir string, pv *v1.PersistentVolume) (string
 	return path.Join(csiPluginDir, persistentVolumeInGlobalPath, pv.Name, globalMountInGlobalPath), nil
 }
 
+// GetVolumePath generates volume path
 func GetVolumePath(kubeletRootDir, pvName, podUID string) string {
 	volID := EscapeQualifiedName(pvName)
 
@@ -61,6 +60,7 @@ func GetVolumePath(kubeletRootDir, pvName, podUID string) string {
 	return path.Join(podVolumeDir, "/mount")
 }
 
+// EscapeQualifiedName replace "/" with "~"
 func EscapeQualifiedName(in string) string {
 	return strings.Replace(in, "/", "~", -1)
 }

@@ -36,7 +36,7 @@ import (
 	"github.com/kubernetes-csi/csi-lib-utils/rpc"
 	"google.golang.org/grpc"
 
-	monitorcontroller "github.com/kubernetes-csi/external-health-monitor/pkg/controller/pv-monitor-controller"
+	monitorcontroller "github.com/kubernetes-csi/external-health-monitor/pkg/controller"
 )
 
 const (
@@ -49,13 +49,16 @@ const (
 var (
 	monitorInterval = flag.Duration("monitor-interval", 1*time.Minute, "Interval for controller to check volumes health condition.")
 
-	kubeconfig        = flag.String("kubeconfig", "", "Absolute path to the kubeconfig file. Required only when running out of cluster.")
-	resync            = flag.Duration("resync", 10*time.Minute, "Resync interval of the controller.")
-	csiAddress        = flag.String("csi-address", "/run/csi/socket", "Address of the CSI driver socket.")
-	showVersion       = flag.Bool("version", false, "Show version.")
-	timeout           = flag.Duration("timeout", 15*time.Second, "Timeout for waiting for attaching or detaching the volume.")
-	workerThreads     = flag.Uint("worker-threads", 10, "Number of pv monitor worker threads")
-	enableNodeWatcher = flag.Bool("version", false, "Enable node watcher.")
+	kubeconfig               = flag.String("kubeconfig", "", "Absolute path to the kubeconfig file. Required only when running out of cluster.")
+	resync                   = flag.Duration("resync", 10*time.Minute, "Resync interval of the controller.")
+	csiAddress               = flag.String("csi-address", "/run/csi/socket", "Address of the CSI driver socket.")
+	showVersion              = flag.Bool("version", false, "Show version.")
+	timeout                  = flag.Duration("timeout", 15*time.Second, "Timeout for waiting for attaching or detaching the volume.")
+	listVolumesInterval      = flag.Duration("list-volumes-interval", 5*time.Minute, "Time interval for calling ListVolumes RPC to check volumes' health condition")
+	volumeListAndAddInterval = flag.Duration("volume-list-add-interval", 5*time.Minute, "Time interval for listing volumes and add them to queue")
+	nodeListAndAddInterval   = flag.Duration("node-list-add-interval", 5*time.Minute, "Time interval for listing nodess and add them to queue")
+	workerThreads            = flag.Uint("worker-threads", 10, "Number of pv monitor worker threads")
+	enableNodeWatcher        = flag.Bool("enable-node-watcher", false, "whether we want to enable node watcher, node watcher will only have effects on local PVs now, it may be useful for block storages too, will take this into account later.")
 
 	enableLeaderElection    = flag.Bool("leader-election", false, "Enable leader election.")
 	leaderElectionNamespace = flag.String("leader-election-namespace", "", "Namespace where the leader election resource lives. Defaults to the pod namespace if not set.")
@@ -159,8 +162,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	monitorController := monitorcontroller.NewPVMonitorController(clientset, storageDriver, supportControllerListVolumes, *enableNodeWatcher, csiConn, *timeout, *monitorInterval, factory.Core().V1().PersistentVolumes(),
-		factory.Core().V1().PersistentVolumeClaims(), factory.Core().V1().Pods(), factory.Core().V1().Nodes())
+	option := monitorcontroller.PVMonitorOptions{
+		DriverName:        storageDriver,
+		ContextTimeout:    *timeout,
+		EnableNodeWatcher: *enableNodeWatcher,
+		SupportListVolume: supportControllerListVolumes,
+
+		ListVolumesInterval:      *listVolumesInterval,
+		PVWorkerExecuteInterval:  *monitorInterval,
+		VolumeListAndAddInterval: *volumeListAndAddInterval,
+
+		NodeWorkerExecuteInterval: *monitorInterval,
+		NodeListAndAddInterval:    *nodeListAndAddInterval,
+	}
+
+	monitorController := monitorcontroller.NewPVMonitorController(clientset, csiConn, factory.Core().V1().PersistentVolumes(),
+		factory.Core().V1().PersistentVolumeClaims(), factory.Core().V1().Pods(), factory.Core().V1().Nodes(), &option)
 
 	run := func(ctx context.Context) {
 		stopCh := ctx.Done()

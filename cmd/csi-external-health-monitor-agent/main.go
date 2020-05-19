@@ -35,7 +35,7 @@ import (
 	"github.com/kubernetes-csi/csi-lib-utils/rpc"
 	"google.golang.org/grpc"
 
-	monitoragent "github.com/kubernetes-csi/external-health-monitor/pkg/agent/pv-monitor-agent"
+	monitoragent "github.com/kubernetes-csi/external-health-monitor/pkg/agent"
 )
 
 const (

@@ -36,27 +36,15 @@ import (
 )
 
 const (
-	// DefaultWatcherResyncPeriod is the resync period of node watcher
-	DefaultWatcherResyncPeriod = 30 * time.Minute
-
 	// DefaultNodeNotReadyTimeDuration is the default time interval we need to consider node broken if it keeps NotReady
-	DefaultNodeNotReadyTimeDuration = 300 * time.Second
-)
-
-// marking event related const vars
-const (
-	UpdatePVRetryCount = 5
-
-	UpdatePVInterval = 5 * time.Second
+	DefaultNodeNotReadyTimeDuration = 5 * time.Minute
 )
 
 // NodeWatcher watches nodes conditions
 type NodeWatcher struct {
 	driverName string
-
-	monitorInterval time.Duration
-	client          kubernetes.Interface
-	recorder        record.EventRecorder
+	client     kubernetes.Interface
+	recorder   record.EventRecorder
 
 	nodeQueue workqueue.Interface
 
@@ -69,27 +57,36 @@ type NodeWatcher struct {
 	// mark the time when we first found the node is broken
 	nodeFirstBrokenMap map[string]time.Time
 
+	// nodeEverMarkedDown stores all nodes which are marked down
+	// if nodes recover, they will be removed from here
 	nodeEverMarkedDown map[string]bool
 
+	// pvcToPodsCache stores PVC/Pods mapping info, we can get all pods using one specific PVC more efficiently by this
 	pvcToPodsCache *util.PVCToPodsCache
+
+	// Time interval for executing node worker goroutines
+	nodeWorkerExecuteInterval time.Duration
+	// Time interval for listing nodess and add them to queue
+	nodeListAndAddInterval time.Duration
 }
 
 // NewNodeWatcher creates a node watcher object that will watch the nodes
 func NewNodeWatcher(driverName string, client kubernetes.Interface, volumeLister corelisters.PersistentVolumeLister,
 	pvcLister corelisters.PersistentVolumeClaimLister, nodeInformer coreinformers.NodeInformer,
-	recorder record.EventRecorder, pvcToPodsCache *util.PVCToPodsCache, monitorInterval time.Duration) *NodeWatcher {
+	recorder record.EventRecorder, pvcToPodsCache *util.PVCToPodsCache, nodeWorkerExecuteInterval time.Duration, nodeListAndAddInterval time.Duration) *NodeWatcher {
 
 	watcher := &NodeWatcher{
-		driverName:         driverName,
-		monitorInterval:    monitorInterval,
-		client:             client,
-		recorder:           recorder,
-		volumeLister:       volumeLister,
-		pvcLister:          pvcLister,
-		nodeQueue:          workqueue.NewNamed("nodes"),
-		nodeFirstBrokenMap: make(map[string]time.Time),
-		nodeEverMarkedDown: make(map[string]bool),
-		pvcToPodsCache:     pvcToPodsCache,
+		driverName:                driverName,
+		nodeWorkerExecuteInterval: nodeWorkerExecuteInterval,
+		nodeListAndAddInterval:    nodeListAndAddInterval,
+		client:                    client,
+		recorder:                  recorder,
+		volumeLister:              volumeLister,
+		pvcLister:                 pvcLister,
+		nodeQueue:                 workqueue.NewNamed("nodes"),
+		nodeFirstBrokenMap:        make(map[string]time.Time),
+		nodeEverMarkedDown:        make(map[string]bool),
+		pvcToPodsCache:            pvcToPodsCache,
 	}
 
 	nodeInformer.Informer().AddEventHandler(
@@ -124,10 +121,8 @@ func (watcher *NodeWatcher) enqueueWork(obj interface{}) {
 	watcher.nodeQueue.Add(objName)
 }
 
-// resync supplements short resync period of shared informers - we don't want
-// all consumers of Node shared informer to have a short resync period,
-// therefore we do our own.
-func (watcher *NodeWatcher) resync() {
+// addNodesToQueue adds all existing nodes to queue periodically
+func (watcher *NodeWatcher) addNodesToQueue() {
 	klog.V(4).Infof("resyncing Node watcher")
 
 	nodes, err := watcher.nodeLister.List(labels.NewSelector())
@@ -144,13 +139,12 @@ func (watcher *NodeWatcher) resync() {
 func (watcher *NodeWatcher) Run(stopCh <-chan struct{}) {
 	defer watcher.nodeQueue.ShutDown()
 	if !cache.WaitForCacheSync(stopCh, watcher.nodeListerSynced) {
-		klog.Errorf("Cannot sync caches")
+		klog.Errorf("Cannot sync cache")
 		return
 	}
 
-	//go watcher.WatchNodes()
-	go wait.Until(watcher.resync, DefaultWatcherResyncPeriod, stopCh) // TODO: do we need this?
-	go wait.Until(watcher.WatchNodes, watcher.monitorInterval, stopCh)
+	go wait.Until(watcher.addNodesToQueue, watcher.nodeListAndAddInterval, stopCh)
+	go wait.Until(watcher.WatchNodes, watcher.nodeWorkerExecuteInterval, stopCh)
 	<-stopCh
 }
 
@@ -215,26 +209,15 @@ func (watcher *NodeWatcher) updateNode(key string, node *v1.Node) {
 				klog.Errorf("clean node failure message error: %+v", err)
 			}
 		}
-
 		return
 	}
 
-	// TODO: need to revisit this later
 	if watcher.isNodeBroken(node) {
 		klog.Infof("node: %s is broken", node.Name)
 		// mark all PVCs/Pods on this node
-		// try several times again
-		var err error
-		for i := 0; i < UpdatePVRetryCount; i++ {
-			err = watcher.markPVCsAndPodsOnUnhealthyNode(node)
-			if err != nil {
-				time.Sleep(UpdatePVInterval)
-				continue
-			}
-			break
-		}
+		err := watcher.markPVCsAndPodsOnUnhealthyNode(node)
 		if err != nil {
-			klog.Infof("mark PVCs on not ready node failed, re-enqueue")
+			klog.Errorf("mark PVCs on not ready node failed, re-enqueue")
 			// if error happened, re-enqueue
 			watcher.enqueueWork(node)
 			return
@@ -274,19 +257,14 @@ func (watcher *NodeWatcher) isNodeBroken(node *v1.Node) bool {
 				timeInterval := now.Sub(firstMarkTime)
 				if timeInterval.Seconds() > DefaultNodeNotReadyTimeDuration.Seconds() {
 					return true
-				} else {
-					klog.V(6).Infof("node:%s is not ready, but less than 5 minutes, re-enqueue", node.Name)
-					// NotReady status lasts less than 5 minutes
-					// re-enqueue
-					watcher.enqueueWork(node)
-					return false
 				}
-			} else {
-				// first time to mark the node NotReady
-				watcher.nodeFirstBrokenMap[objName] = now
-				watcher.enqueueWork(node)
+				klog.V(6).Infof("node:%s is not ready, but less than 5 minutes", node.Name)
 				return false
 			}
+
+			// first time to mark the node NotReady
+			watcher.nodeFirstBrokenMap[objName] = now
+			return false
 		}
 	}
 
@@ -297,19 +275,12 @@ func (watcher *NodeWatcher) deleteNode(key string, node *v1.Node) {
 	klog.Infof("node:%s is deleted, so mark the local PVs on it", node.Name)
 
 	// mark all local PVs on this node
-	// try several times again
-	for i := 0; i < UpdatePVRetryCount; i++ {
-		err := watcher.markPVCsAndPodsOnUnhealthyNode(node)
-		if err != nil {
-			klog.V(4).Infof("marking local PVs failed: %v", err)
-			time.Sleep(UpdatePVInterval)
-			continue
-		}
-		return
+	err := watcher.markPVCsAndPodsOnUnhealthyNode(node)
+	if err != nil {
+		klog.Errorf("marking local PVs failed: %v", err)
+		// must re-enqueue here, because we can not get this from informer(node-lister) any more
+		watcher.enqueueWork(node)
 	}
-
-	// if we reach here, it means that marking PVCs/Pods failed, re-enqueue
-	watcher.enqueueWork(node)
 }
 
 func (watcher *NodeWatcher) cleanNodeFailureConditionForPVC(node *v1.Node) error {
@@ -343,6 +314,7 @@ func (watcher *NodeWatcher) cleanNodeFailureConditionForPVC(node *v1.Node) error
 			continue
 		}
 
+		// TODO: add events to Pods instead
 		pvc, err := watcher.pvcLister.PersistentVolumeClaims(pv.Spec.ClaimRef.Namespace).Get(pv.Spec.ClaimRef.Name)
 		if err != nil {
 			klog.Errorf("get PVC[%s] from PVC lister error: %+v", pv.Spec.ClaimRef.Namespace+"/"+pv.Spec.ClaimRef.Name, err)
@@ -350,30 +322,8 @@ func (watcher *NodeWatcher) cleanNodeFailureConditionForPVC(node *v1.Node) error
 		}
 
 		pvcClone := pvc.DeepCopy()
-
 		message := "Node: " + node.Name + " recovered"
 		watcher.recorder.Event(pvcClone, v1.EventTypeWarning, "NodeRecovered", message)
-
-		// TODO: handle PVC conditions for the node recovery?
-		/*nodeFailureExist := false
-		for _, pvcCondition := range pvcClone.Status.Conditions {
-			if pvcCondition.Type == util.NodeFailed + "d" {
-				pvcCondition.Message = "Node:"
-				pvcCondition.Type = util.NodeRecovered
-				nodeFailureExist = true
-				break
-			}
-		}
-
-		if !nodeFailureExist {
-			continue
-		}
-
-		_, err = watcher.client.CoreV1().PersistentVolumeClaims(pvcClone.Namespace).UpdateStatus(pvcClone)
-		if err != nil {
-			klog.Errorf("update PVC[%s] error: %+v", pvcClone.Namespace + "/" + pvcClone.Name, err)
-			return err
-		}*/
 
 	}
 	return nil
@@ -416,6 +366,7 @@ func (watcher *NodeWatcher) markPVCsAndPodsOnUnhealthyNode(node *v1.Node) error 
 			return err
 		}
 
+		// TODO: add events to Pods instead
 		pvcClone := pvc.DeepCopy()
 
 		message := "Pods: [ "
@@ -425,31 +376,6 @@ func (watcher *NodeWatcher) markPVCsAndPodsOnUnhealthyNode(node *v1.Node) error 
 		message += "]" + " consuming PVC: " + pvcClone.Name + " in namespace: " + pvcClone.Namespace + " are now on a failed node: " + node.Name
 
 		watcher.recorder.Event(pvcClone, v1.EventTypeWarning, "NodeFailed", message)
-
-		// TODO: store the message in PVC conditions ?
-		/*nodeFailureExist := false
-		for _, pvcCondition := range pvcClone.Status.Conditions {
-			if pvcCondition.Type == util.NodeFailed || pvcCondition.Type == util.NodeRecovered {
-				pvcCondition.Message = message
-				nodeFailureExist = true
-				break
-			}
-		}
-
-		if !nodeFailureExist {
-			condition := v1.PersistentVolumeClaimCondition{
-				Type:util.NodeFailed,
-				Message:message,
-			}
-			pvcClone.Status.Conditions = append(pvcClone.Status.Conditions, condition)
-		}
-
-		_, err = watcher.client.CoreV1().PersistentVolumeClaims(pvcClone.Namespace).UpdateStatus(pvcClone)
-		if err != nil {
-			klog.Errorf("update PVC[%s] error: %+v", pvcClone.Namespace + "/" + pvcClone.Name, err)
-			return err
-		}*/
-
 	}
 	return nil
 }

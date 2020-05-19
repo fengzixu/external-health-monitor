@@ -38,7 +38,7 @@ func (agent *PVMonitorAgent) addPodToQueue(pod *v1.Pod) {
 					continue
 				}
 
-				if pv.Spec.CSI != nil && pv.Spec.CSI.Driver == agent.monitorName {
+				if pv.Spec.CSI != nil && pv.Spec.CSI.Driver == agent.driverName {
 					item := &PodWithPVItem{
 						podNameSpace: pod.Namespace,
 						podName:      pod.Name,

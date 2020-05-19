@@ -36,7 +36,7 @@ import (
 
 // PVHealthConditionChecker is for checking pv health condition
 type PVHealthConditionChecker struct {
-	checkerName string
+	driverName string
 
 	csiConn       *grpc.ClientConn
 	timeout       time.Duration
@@ -49,16 +49,12 @@ type PVHealthConditionChecker struct {
 	csiPVHandler CSIHandler
 }
 
-// NewPVHealthConditionChecker return an instance of PVHealthConditionChecker
+// NewPVHealthConditionChecker returns an instance of PVHealthConditionChecker
 func NewPVHealthConditionChecker(name string, conn *grpc.ClientConn, kClient kubernetes.Interface, timeout time.Duration,
 	pvcLister corelisters.PersistentVolumeClaimLister, pvLister corelisters.PersistentVolumeLister, recorder record.EventRecorder) *PVHealthConditionChecker {
-	/*broadcaster := record.NewBroadcaster()
-	broadcaster.StartRecordingToSink(&corev1.EventSinkImpl{Interface: kClient.CoreV1().Events(v1.NamespaceAll)})
-	var eventRecorder record.EventRecorder
-	eventRecorder = broadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: fmt.Sprintf("csi-pv-monitor %s", name)})
-	*/
+
 	return &PVHealthConditionChecker{
-		checkerName:   name,
+		driverName:    name,
 		csiConn:       conn,
 		k8sClient:     kClient,
 		eventRecorder: recorder,
@@ -70,8 +66,8 @@ func NewPVHealthConditionChecker(name string, conn *grpc.ClientConn, kClient kub
 	}
 }
 
-// CheckControllerVolumesStatus checks volumes health condition by ListVolumes
-func (checker *PVHealthConditionChecker) CheckControllerVolumesStatus() error {
+// CheckControllerListVolumeStatuses checks volumes health condition by ListVolumes
+func (checker *PVHealthConditionChecker) CheckControllerListVolumeStatuses() error {
 	ctx, cancel := context.WithTimeout(context.Background(), checker.timeout)
 	defer cancel()
 
@@ -86,7 +82,7 @@ func (checker *PVHealthConditionChecker) CheckControllerVolumesStatus() error {
 	}
 
 	for _, pv := range pvs {
-		if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != checker.checkerName {
+		if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != checker.driverName {
 			klog.Infof("csi source is nil or the volume is not managed by this checker/monitor")
 			continue
 		}
@@ -98,7 +94,7 @@ func (checker *PVHealthConditionChecker) CheckControllerVolumesStatus() error {
 
 		volumeHandle, err := checker.GetVolumeHandle(pv)
 		if err != nil {
-			klog.Errorf("Get volume handler error: %+v", err)
+			klog.Errorf("Get volume handle error: %+v", err)
 			continue
 		}
 
@@ -116,7 +112,7 @@ func (checker *PVHealthConditionChecker) CheckControllerVolumesStatus() error {
 	return nil
 }
 
-// GetVolumeHandle return the volume handle of the pv
+// GetVolumeHandle returns the volume handle of the pv
 func (checker *PVHealthConditionChecker) GetVolumeHandle(pv *v1.PersistentVolume) (string, error) {
 	if pv.Spec.CSI == nil {
 		return "", fmt.Errorf("csi source is nil")
@@ -127,7 +123,7 @@ func (checker *PVHealthConditionChecker) GetVolumeHandle(pv *v1.PersistentVolume
 
 // CheckControllerVolumeStatus checks volume status in controller side
 func (checker *PVHealthConditionChecker) CheckControllerVolumeStatus(pv *v1.PersistentVolume) error {
-	if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != checker.checkerName {
+	if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != checker.driverName {
 		return fmt.Errorf("csi source is nil or the volume is not managed by this checker/monitor")
 	}
 
@@ -140,7 +136,7 @@ func (checker *PVHealthConditionChecker) CheckControllerVolumeStatus(pv *v1.Pers
 
 	volumeHandle, err := checker.GetVolumeHandle(pv)
 	if err != nil {
-		klog.Errorf("Get volume handler error: %+v", err)
+		klog.Errorf("Get volume handle error: %+v", err)
 		return err
 	}
 
@@ -152,8 +148,6 @@ func (checker *PVHealthConditionChecker) CheckControllerVolumeStatus(pv *v1.Pers
 	if err != nil {
 		return err
 	}
-
-	// if error is not nil, the volumeCondition result can not be nil neither
 
 	// At the first stage, we just send PVC events
 	if volumeCondition.GetAbnormal() {
@@ -170,7 +164,7 @@ func (checker *PVHealthConditionChecker) CheckControllerVolumeStatus(pv *v1.Pers
 
 // CheckNodeVolumeStatus checks volume status in node side
 func (checker *PVHealthConditionChecker) CheckNodeVolumeStatus(kubeletRootPath string, supportStageUnstage bool, pv *v1.PersistentVolume, pod *v1.Pod) error {
-	if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != checker.checkerName {
+	if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != checker.driverName {
 		return fmt.Errorf("csi source is nil or the volume is not managed by this checker/monitor")
 	}
 
@@ -183,7 +177,7 @@ func (checker *PVHealthConditionChecker) CheckNodeVolumeStatus(kubeletRootPath s
 
 	volumeHandle, err := checker.GetVolumeHandle(pv)
 	if err != nil {
-		klog.Errorf("Get volume handler error: %+v", err)
+		klog.Errorf("Get volume handle error: %+v", err)
 		return err
 	}
 
@@ -206,8 +200,6 @@ func (checker *PVHealthConditionChecker) CheckNodeVolumeStatus(kubeletRootPath s
 	if err != nil {
 		return err
 	}
-
-	// if error is not nil, the volumeCondition result can not be nil neither
 
 	// At the first stage, we just send PVC events
 	if volumeCondition.GetAbnormal() {
