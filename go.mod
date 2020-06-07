@@ -3,7 +3,7 @@ module github.com/kubernetes-csi/external-health-monitor
 go 1.13
 
 require (
-	github.com/container-storage-interface/spec v1.2.0-rc1.0.20200501202129-87a27a249656
+	github.com/container-storage-interface/spec v1.3.0
 	github.com/golang/protobuf v1.3.5 // indirect
 	github.com/imdario/mergo v0.3.9 // indirect
 	github.com/kubernetes-csi/csi-lib-utils v0.7.0
