@@ -187,6 +187,40 @@ func main() {
 	monitorController := monitorcontroller.NewPVMonitorController(clientset, csiConn, factory.Core().V1().PersistentVolumes(),
 		factory.Core().V1().PersistentVolumeClaims(), factory.Core().V1().Pods(), factory.Core().V1().Nodes(), factory.Core().V1().Events(), eventRecorder, &option)
 
+	informer := factory.Core().V1().Events()
+	podInformer := factory.Core().V1().Pods()
+
+	pod, err := podInformer.Lister().Pods("test-event").Get("dnsutils")
+	if err != nil {
+		klog.Fatalf("failed to get pod : %v", err)
+	}
+
+	eventRecorder.Event(pod, v1.EventTypeNormal, "test", "test")
+
+	for {
+		event, err := informer.Lister().Events("test-event").Get("test-event")
+		klog.Errorf("event error is: %+v", err)
+		klog.Infof("Get the event: %+v", event)
+		time.Sleep(5 * time.Second)
+	}
+
+	informer := factory.Core().V1().Events()
+	podInformer := factory.Core().V1().Pods()
+
+	pod, err := podInformer.Lister().Pods("test-event").Get("dnsutils")
+	if err != nil {
+		klog.Fatalf("failed to get pod : %v", err)
+	}
+
+	eventRecorder.Event(pod, v1.EventTypeNormal, "test", "test")
+
+	for {
+		event, err := informer.Lister().Events("test-event").Get("test-event")
+		klog.Errorf("event error is: %+v", err)
+		klog.Infof("Get the event: %+v", event)
+		time.Sleep(5 * time.Second)
+	}
+
 	run := func(ctx context.Context) {
 		stopCh := ctx.Done()
 		factory.Start(stopCh)

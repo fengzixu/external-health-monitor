@@ -7,7 +7,7 @@ apiVersion: apps/v1
 metadata:
   name: csi-external-health-monitor-controller
 spec:
-  replicas: 3
+  replicas: 1
   selector:
     matchLabels:
       external-health-monitor-controller: mock-driver
@@ -19,7 +19,7 @@ spec:
       serviceAccount: csi-external-health-monitor-controller
       containers:
         - name: csi-external-health-monitor-controller
-          image: k8s.gcr.io/sig-storage/csi-external-health-monitor-controller:v0.1.0
+          image: quay.io/fengzixu/csi-external-health-monitor-controller:event-test
           args:
             - "--v=5"
             - "--csi-address=$(ADDRESS)"

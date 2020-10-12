@@ -239,7 +239,7 @@ func (checker *PVHealthConditionChecker) sendRecoveryEventToPVC(pvc *v1.Persiste
 	}
 
 	if len(events) > 0 {
-		checker.eventRecorder.Event(pvc, v1.EventTypeNormal, "VolumeConditionNormal", volumeCondition.GetMessage())
+		checker.eventRecorder.Event(pvc, v1.EventTypeNormal, "VolumeConditionNormal", util.DefaultRecoveryEventMessage)
 	}
 
 	return nil
